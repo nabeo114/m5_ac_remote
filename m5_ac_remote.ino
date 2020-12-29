@@ -1,3 +1,11 @@
+/*
+    note: need add library Adafruit_SHT31 from library manage
+    Github: https://github.com/adafruit/Adafruit_SHT31
+    
+    note: need add library Adafruit_BMP280 from library manage
+    Github: https://github.com/adafruit/Adafruit_BMP280_Library
+*/
+
 #include <M5StickC.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
@@ -7,7 +15,12 @@
 #include <IRsend.h>
 #include <ir_Mitsubishi.h>
 #include <HTTPClient.h>
-#include "DHT12.h"
+#define USE_ENV2
+#ifdef USE_ENV2
+  #include <Adafruit_SHT31.h>
+#else
+  #include "DHT12.h"
+#endif
 #include <Adafruit_BMP280.h>
 #include "m5_ac_remote.h"
 
@@ -18,12 +31,16 @@ char pubMessage[1024];
 const uint16_t kIrLed = 32;  // M5StickC IR UNIT
 IRMitsubishiAC ac(kIrLed);  // Set the GPIO used for sending messages.
 
+#ifdef USE_ENV2
+Adafruit_SHT31 sht31;
+#else
 DHT12 dht12;
+#endif
 Adafruit_BMP280 bme;
 
 #define DISP_AC_REMOTE    0
 #define DISP_ENV_MONITOR  1
-unsigned int disp_mode = 0;
+unsigned int disp_mode = DISP_AC_REMOTE;
 
 void setup_wifi() {
   Serial.print("Connecting to WiFi: ");
@@ -202,8 +219,13 @@ unsigned long upload_time = 0;
 void envLoop() {
   current_time = millis();
   if ((long)(detect_time - current_time) < 0) {
+#ifdef USE_ENV2
+    temperature = sht31.readTemperature();
+    humidity = sht31.readHumidity();
+#else
     temperature = dht12.readTemperature();
     humidity = dht12.readHumidity();
+#endif
     pressure = bme.readPressure() / 100.0F;
 
     if (disp_mode == DISP_ENV_MONITOR) {
@@ -309,6 +331,13 @@ void setup() {
   ac.begin();
   Serial.begin(115200);
   delay(200);
+
+#ifdef USE_ENV2
+  if (!sht31.begin(0x44)) {
+    Serial.println("Could not find a valid SHT31 sensor, check wiring!");
+    while (1);
+  }
+#endif
 
   if (!bme.begin(0x76)) {
     Serial.println("Could not find a valid BMP280 sensor, check wiring!");
