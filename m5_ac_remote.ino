@@ -1,11 +1,3 @@
-/*
-    note: need add library Adafruit_SHT31 from library manage
-    Github: https://github.com/adafruit/Adafruit_SHT31
-    
-    note: need add library Adafruit_BMP280 from library manage
-    Github: https://github.com/adafruit/Adafruit_BMP280_Library
-*/
-
 #include <M5StickC.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
@@ -14,14 +6,6 @@
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
 #include <ir_Mitsubishi.h>
-#include <HTTPClient.h>
-#define USE_ENV2
-#ifdef USE_ENV2
-  #include <Adafruit_SHT31.h>
-#else
-  #include "DHT12.h"
-#endif
-#include <Adafruit_BMP280.h>
 #include "m5_ac_remote.h"
 
 WiFiClientSecure httpsClient;
@@ -30,17 +14,6 @@ char pubMessage[1024];
 
 const uint16_t kIrLed = 32;  // M5StickC IR UNIT
 IRMitsubishiAC ac(kIrLed);  // Set the GPIO used for sending messages.
-
-#ifdef USE_ENV2
-Adafruit_SHT31 sht31;
-#else
-DHT12 dht12;
-#endif
-Adafruit_BMP280 bme;
-
-#define DISP_AC_REMOTE    0
-#define DISP_ENV_MONITOR  1
-unsigned int disp_mode = DISP_AC_REMOTE;
 
 void setup_wifi() {
   Serial.print("Connecting to WiFi: ");
@@ -94,51 +67,6 @@ void connect_mqtt() {
   }
 }
 
-void setup_time() {
-  configTime(9 * 3600L, 0, "ntp.nict.jp", "time.google.com", "ntp.jst.mfeed.ad.jp");
-}
-
-void send_post_request(const char *url, const String &body) {
-  HTTPClient http;
-  
-  Serial.print("[HTTP] begin...\n");
-  // configure traged server and url
-  http.begin(url); //HTTP
-
-  const char* headerNames[] = {"Location"};
-  http.collectHeaders(headerNames, sizeof(headerNames) / sizeof(headerNames[0]));
-  
-  Serial.print("[HTTP] POST...\n");
-  // start connection and send HTTP header
-  int httpCode = http.POST(body);
-  
-  // httpCode will be negative on error
-  if (httpCode > 0) {
-    // HTTP header has been send and Server response header has been handled
-    Serial.printf("[HTTP] POST... code: %d\n", httpCode);
-   
-    // file found at server
-    if (httpCode == HTTP_CODE_OK) {
-      String payload = http.getString();
-//      Serial.println(payload);
-    }
-    else if (httpCode == HTTP_CODE_FOUND) {
-      String payload = http.getString();
-//      Serial.println(payload);
-      
-      Serial.printf("[HTTP] POST... Location: %s\n", http.header("Location").c_str());
-
-      String message_body;
-//      send_get_request(http.header("Location").c_str(), message_body);
-//      Serial.println(message_body);
-    }
-  } else {
-    Serial.printf("[HTTP] POST... failed, error: %s\n", http.errorToString(httpCode).c_str());
-  }
-  
-  http.end();
-}
-
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.print("Message arrived [");
   Serial.print(topic);
@@ -171,9 +99,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   ac.send();
   printState();
-  if (disp_mode == DISP_AC_REMOTE) {
-    displayACRemote();
-  }
+  displayACRemote();
   publishDeviceShadowReported();
 }
 
@@ -207,71 +133,6 @@ void printState() {
   Serial.println();
 }
 
-float temperature;
-float humidity;
-float pressure;
-const unsigned long detect_interval = 1000; // 1sec
-const unsigned long upload_interval = 300000; // 5min
-unsigned long current_time = 0;
-unsigned long detect_time = 0;
-unsigned long upload_time = 0;
-
-void envLoop() {
-  current_time = millis();
-  if ((long)(detect_time - current_time) < 0) {
-#ifdef USE_ENV2
-    temperature = sht31.readTemperature();
-    humidity = sht31.readHumidity();
-#else
-    temperature = dht12.readTemperature();
-    humidity = dht12.readHumidity();
-#endif
-    pressure = bme.readPressure() / 100.0F;
-
-    if (disp_mode == DISP_ENV_MONITOR) {
-      displayENVMonitor();
-    }
-
-    detect_time = current_time + detect_interval;
-
-    if ((long)(upload_time - current_time) < 0) {
-      struct tm timeInfo;
-      getLocalTime(&timeInfo); // 時刻を取得
-
-      char time[50];
-      sprintf(time, "%04d/%02d/%02d %02d:%02d:%02d",
-        timeInfo.tm_year+1900, timeInfo.tm_mon+1, timeInfo.tm_mday,
-        timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
-
-      Serial.printf("Time: %s\n", time);
-      Serial.printf("Temperature: %2.1f C\n", temperature);
-      Serial.printf("Humidity: %2.0f %%\n", humidity);
-      Serial.printf("Pressure: %4.1f hPa\n", pressure);
-
-      //jsonデータ作成
-//      StaticJsonDocument<500> doc;
-//      const size_t capacity = JSON_OBJECT_SIZE(4);
-//      DynamicJsonDocument doc(capacity);
-      DynamicJsonDocument doc(192);
-      doc["time"] = time;
-      doc["temperature"] = temperature;
-      doc["humidity"] = humidity;
-      doc["pressure"] = pressure;
-
-      String message_body;
-
-      serializeJson(doc, message_body);
-
-      Serial.println(message_body);
-
-      send_post_request(host, message_body);
-      mqttPublish(pubTopicDB, message_body.c_str());
- 
-      upload_time = current_time + upload_interval;
-    }
-  }
-}
-
 void displayACRemote() {
   M5.Lcd.fillScreen(BLACK);
   M5.Lcd.setCursor(0, 0, 2);
@@ -301,22 +162,7 @@ void displayACRemote() {
 
   uint8_t temp = ac.getTemp();
   M5.Lcd.setCursor(0, 60, 2);
-  M5.Lcd.printf("Temp: %d", temp);
-}
-
-void displayENVMonitor() {
-  M5.Lcd.fillScreen(BLACK);
-  M5.Lcd.setCursor(0, 0, 2);
-  M5.Lcd.println("M5 ENV Monitor");
-
-  M5.Lcd.setCursor(0, 20, 2);
-  M5.Lcd.printf("Temperature: %2.1f C", temperature);
-
-  M5.Lcd.setCursor(0, 40, 2);
-  M5.Lcd.printf("Humidity: %2.0f %%", humidity);
-
-  M5.Lcd.setCursor(0, 60, 2);
-  M5.Lcd.printf("Pressure: %4.1f hPa", pressure);
+  M5.Lcd.printf("Temperature: %2d C", temp);
 }
 
 void setup() {
@@ -332,21 +178,8 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 
-#ifdef USE_ENV2
-  if (!sht31.begin(0x44)) {
-    Serial.println("Could not find a valid SHT31 sensor, check wiring!");
-    while (1);
-  }
-#endif
-
-  if (!bme.begin(0x76)) {
-    Serial.println("Could not find a valid BMP280 sensor, check wiring!");
-    while (1);
-  }
-
   setup_wifi();
   setup_mqtt();
-  setup_time();
 
   // Set up what we want to send. See ir_Mitsubishi.cpp for all the options.
   Serial.println("Default state of the remote.");
@@ -384,17 +217,7 @@ void loop() {
     publishDeviceShadowDesired();
   }
 
-  if (M5.BtnB.wasPressed()) {
-    if (disp_mode == DISP_AC_REMOTE) {
-      disp_mode = DISP_ENV_MONITOR;
-      displayENVMonitor();
-    } else {
-      disp_mode = DISP_AC_REMOTE;
-      displayACRemote();
-    }
-  }
-
-  envLoop();
+  delay(1);
 
   // Now send the IR signal.
 #if SEND_MITSUBISHI_AC
