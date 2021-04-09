@@ -185,6 +185,9 @@ void setup() {
   Serial.println("Default state of the remote.");
   printState();
   Serial.println("Setting desired state for A/C.");
+  unsigned char* ir_code = ac.getRaw();
+  ir_code[14] = 0x04;  // 内部クリーン
+  ac.setRaw(ir_code);
   ac.off();
   ac.setFan(kMitsubishiAcFanAuto);
   ac.setMode(kMitsubishiAcCool);
