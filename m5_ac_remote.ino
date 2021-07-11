@@ -12,7 +12,7 @@ WiFiClientSecure httpsClient;
 PubSubClient mqttClient(httpsClient);
 char pubMessage[1024];
 
-const uint16_t kIrLed = 32;  // M5StickC IR UNIT
+const uint16_t kIrLed = 9;  // M5StickC IR
 IRMitsubishiAC ac(kIrLed);  // Set the GPIO used for sending messages.
 
 void setup_wifi() {
