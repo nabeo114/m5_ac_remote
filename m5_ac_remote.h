@@ -10,6 +10,7 @@ const char* endpoint = "xxxxxxxxxxxxxxxxxx.iot.ap-northeast-1.amazonaws.com"; //
 const int mqttPort = 8883;
 const char* pubTopic = "$aws/things/your_thing_name/shadow/update"; //Enter publish topic
 const char* subTopic = "$aws/things/your_thing_name/shadow/update/delta"; //Enter subscribe topic
+const char* pubTopicDB = "your_topic_name"; //Enter publish topic
 
 const char* rootCA =
 "-----BEGIN CERTIFICATE-----\n" \
@@ -83,5 +84,8 @@ const char* privateKey =
 "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n" \
 "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
 "-----END RSA PRIVATE KEY-----\n";
+
+// HTTP Setting
+const char* host = "https://script.google.com/macros/~~~~"; // Deployed web app URL
 
 #endif
