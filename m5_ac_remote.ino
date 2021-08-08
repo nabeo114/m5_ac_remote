@@ -373,14 +373,16 @@ void loop() {
       Serial.printf("Pressure: %4.1f hPa\n", pressure);
 
       //jsonデータ作成
-//      StaticJsonDocument<500> doc;
 //      const size_t capacity = JSON_OBJECT_SIZE(4);
 //      DynamicJsonDocument doc(capacity);
-      DynamicJsonDocument doc(128);
+      DynamicJsonDocument doc(192);
       doc["time"] = time;
       doc["temperature"] = temperature;
       doc["humidity"] = humidity;
       doc["pressure"] = pressure;
+      doc["ac_power"] = (int)ac.getPower();
+      doc["ac_mode"] = ac.getMode();
+      doc["ac_temp"] = ac.getTemp();
 
       String message_body;
 
