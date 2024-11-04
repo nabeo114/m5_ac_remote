@@ -11,7 +11,7 @@ This project utilizes the M5StickC to control a Mitsubishi air conditioner via i
   - In the Boards Manager, install **esp32** version 2.0.17.
   - Select **M5Stick-C** as the board (Tools > Board > esp32 > M5Stick-C).
 - **Libraries**:
-  - Install **IRremoteESP8266** version 2.6.6 for infrared control of Mitsubishi air conditioners.
+  - Install **IRremoteESP8266** version 2.7.12 for infrared control of Mitsubishi air conditioners.
 
 ## References
 
