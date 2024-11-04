@@ -38,7 +38,7 @@ DHT12 dht12;
 #endif
 Adafruit_BMP280 bme;
 
-void setup_wifi() {
+void setupWifi() {
   Serial.print("Connecting to WiFi: ");
   Serial.println(ssid);
 
@@ -46,7 +46,6 @@ void setup_wifi() {
   WiFi.disconnect();
   WiFi.begin(ssid, password);
 
-  // attempt to connect to Wifi network:
   while (WiFi.status() != WL_CONNECTED) {
     Serial.print(".");
     delay(500);
@@ -58,7 +57,14 @@ void setup_wifi() {
   Serial.println(WiFi.localIP());
 }
 
-void setup_mqtt() {
+void checkWifiReconnect() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi connection lost. Reconnecting...");
+    setupWifi();
+  }
+}
+
+void setupMqtt() {
   httpsClient.setCACert(rootCA);
   httpsClient.setCertificate(certificate);
   httpsClient.setPrivateKey(privateKey);
@@ -66,58 +72,53 @@ void setup_mqtt() {
   mqttClient.setCallback(mqttCallback);
 }
 
-void connect_mqtt() {
-  // Loop until we're reconnected
+void connectMqtt() {
   while (!mqttClient.connected()) {
     Serial.print("Attempting MQTT connection...");
-    // Create a random client ID
-    String clientId = "ESP32Client-";
-    clientId += String(random(0xffff), HEX);
-    // Attempt to connect
+    uint64_t chipId = ESP.getEfuseMac();
+    String clientId = "ESP32Client-" + String((uint32_t)(chipId & 0xFFFFFFFF), HEX);
     if (mqttClient.connect(clientId.c_str())) {
       Serial.println("connected");
-      // Once connected, publish an announcement...
       mqttClient.publish("outTopic", "hello world");
-      // ... and resubscribe
       mqttClient.subscribe(subTopic);
     } else {
-      Serial.print("failed, rc=");
+      Serial.print("MQTT connection failed, rc=");
       Serial.print(mqttClient.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
+      Serial.println(". Will retry in 5 seconds");
       delay(5000);
     }
   }
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived [");
+  Serial.print("Message arrived at ");
   Serial.print(topic);
-  Serial.print("] ");
-  for (int i=0; i<length; i++) {
+  Serial.print(": ");
+  for (unsigned int i = 0; i < length; i++) {
     Serial.print((char)payload[i]);
   }
   Serial.println();
 
-//  StaticJsonDocument<500> doc;
   const size_t capacity = 3*JSON_OBJECT_SIZE(1) + 2*JSON_OBJECT_SIZE(3) + JSON_OBJECT_SIZE(4) + 60;
   DynamicJsonDocument doc(capacity);
 
-  deserializeJson(doc, payload);
+  DeserializationError error = deserializeJson(doc, payload);
+  if (error) {
+    Serial.print("JSON deserialization failed: ");
+    Serial.println(error.f_str());
+    return;
+  }
 
   JsonObject state = doc["state"];
 
   if (state.containsKey("power")) {
-    const bool state_power = state["power"];
-    ac.setPower(state_power);
+    ac.setPower(state["power"]);
   }
   if (state.containsKey("mode")) {
-    const uint8_t state_mode = state["mode"];
-    ac.setMode(state_mode);
+    ac.setMode(state["mode"]);
   }
   if (state.containsKey("temp")) {
-    const uint8_t state_temp = state["temp"];
-    ac.setTemp(state_temp);
+    ac.setTemp(state["temp"]);
   }
 
   ac.send();
@@ -127,11 +128,15 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 void mqttPublish(const char* topic, const char* payload) {
-  Serial.print("Publish message: ");
-  Serial.println(topic);
+  Serial.print("Publish message to ");
+  Serial.print(topic);
+  Serial.print(": ");
   Serial.println(payload);
-  mqttClient.publish(topic, payload);
-  Serial.println("Published.");
+  if (mqttClient.publish(topic, payload)) {
+    Serial.println("Published successfully.");
+  } else {
+    Serial.println("Publish failed.");
+  }
 }
 
 void publishDeviceShadowReported() {
@@ -148,57 +153,61 @@ void printState() {
   // Display the settings.
   Serial.println("Mitsubishi A/C remote is in the following state:");
   Serial.printf("  %s\n", ac.toString().c_str());
+
   // Display the encoded IR sequence.
-  unsigned char* ir_code = ac.getRaw();
+  unsigned char* irCode = ac.getRaw();
   Serial.print("IR Code: 0x");
   for (uint8_t i = 0; i < kMitsubishiACStateLength; i++)
-    Serial.printf("%02X", ir_code[i]);
+    Serial.printf("%02X", irCode[i]);
   Serial.println();
 }
 
-int disp_mode = 0; // AC Remote
+int dispMode = 0; // Display mode for AC Remote
 
 void displayACRemote() {
-  if (disp_mode != 0) {
-    return;
+  if (dispMode != 0) {
+    return; // Exit if display mode is not set to AC Remote
   }
   
   M5.Lcd.fillScreen(BLACK);
   M5.Lcd.setCursor(0, 0, 2);
   M5.Lcd.println("M5 AC Remote");
 
+  // Display power status
   bool power = ac.getPower();
   M5.Lcd.setCursor(0, 20, 2);
   M5.Lcd.printf("Power: %s", power ? "ON" : "OFF");
 
+  // Display mode setting
   char *mode;
   switch (ac.getMode()) {
-  case kMitsubishiAcCool:
+  case kMitsubishiAcCool: // Cool mode
     mode = "Cool";
     break;
-  case kMitsubishiAcDry:
+  case kMitsubishiAcDry: // Dry mode
     mode = "Dry";
     break;
-  case kMitsubishiAcHeat:
+  case kMitsubishiAcHeat: // Heat mode
     mode = "Heat";
     break;
   default:
-    mode = "Err";
+    mode = "Unknown";
     break;
   }
   M5.Lcd.setCursor(0, 40, 2);
   M5.Lcd.printf("Mode: %s", mode);
 
+  // Display temperature setting
   uint8_t temp = ac.getTemp();
   M5.Lcd.setCursor(0, 60, 2);
   M5.Lcd.printf("Temperature: %2d C", temp);
 }
 
-void setup_time() {
+void setupTime() {
   configTime(9 * 3600L, 0, "ntp.nict.jp", "time.google.com", "ntp.jst.mfeed.ad.jp");
 }
 
-void send_post_request(const char *url, const String &body) {
+void sendPostRequest(const char *url, const String &body) {
   HTTPClient http;
   
   Serial.print("[HTTP] begin...\n");
@@ -248,59 +257,67 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 
+  // Initialize the AC remote
   ac.begin();
 
+  // Initialize I2C for sensors
   Wire.begin(32,33);
 
 #ifdef USE_ENV2
+  // Initialize the SHT31 sensor if defined
   if (!sht31.begin(0x44)) {
     Serial.println("Could not find a valid SHT31 sensor, check wiring!");
     while (1);
   }
 #endif
 
+  // Initialize the BMP280 sensor
   if (!bme.begin(0x76)) {
     Serial.println("Could not find a valid BMP280 sensor, check wiring!");
     while (1);
   }
 
-  setup_wifi();
-  setup_mqtt();
-  setup_time();
+  // Setup WiFi, MQTT, and Time
+  setupWifi();
+  setupMqtt();
+  setupTime();
 
-  // Set up what we want to send. See ir_Mitsubishi.cpp for all the options.
+  // Initialize the A/C remote to a default state
   Serial.println("Default state of the remote.");
   printState();
+
   Serial.println("Setting desired state for A/C.");
-  unsigned char* ir_code = ac.getRaw();
-  ir_code[14] = 0x04;  // 内部クリーン
-  ac.setRaw(ir_code);
+  unsigned char* irCode = ac.getRaw();
+  irCode[14] = 0x04;  // Set internal clean mode
+  ac.setRaw(irCode);
   ac.off();
   ac.setFan(kMitsubishiAcFanAuto);
   ac.setMode(kMitsubishiAcCool);
   ac.setTemp(28);
   ac.setVane(kMitsubishiAcVaneAuto);
   ac.setWideVane(kMitsubishiAcWideVaneAuto);
+
   printState();
   displayACRemote();
 
-  connect_mqtt();
-  delay(500); // Wait for a while after subscribe "/update/delta" before publish "/update".
+  // Connect to MQTT and publish device shadow
+  connectMqtt();
+  delay(500); // Wait for a while after subscribing to "/update/delta" before publishing "/update"
   publishDeviceShadowReported();
 }
 
 float temperature;
 float humidity;
 float pressure;
-const unsigned long detect_interval = 1000; // 1sec
-const unsigned long upload_interval = 300000; // 5min
-unsigned long current_time = 0;
-unsigned long detect_time = 0;
-unsigned long upload_time = 0;
+const unsigned long DETECT_INTERVAL = 1000; // 1 second
+const unsigned long UPLOAD_INTERVAL = 600000; // 10 minutes
+unsigned long currentTime = 0;
+unsigned long detectTime = 0;
+unsigned long uploadTime = 0;
 
 void displayEnvMonitor() {
-  if (disp_mode == 0) {
-    return;
+  if (dispMode == 0) {
+    return; // Exit if display mode is not set to ENV Monitor
   }
   
   M5.Lcd.setCursor(0, 0, 2);
@@ -318,11 +335,16 @@ void loop() {
   // put your main code here, to run repeatedly:
   M5.update();
 
-  if (!mqttClient.connected()) {
-    connect_mqtt();
-  }
-  mqttClient.loop();
+  // Check Wi-Fi connectivity and reconnect if necessary
+  checkWifiReconnect();
 
+  // Ensure MQTT client is connected
+  if (!mqttClient.connected()) {
+    connectMqtt();
+  }
+  mqttClient.loop(); // Process incoming messages
+
+  // Handle AC power toggle with Button A
   if (M5.BtnA.wasPressed()) {
     if (ac.getPower()) {
       ac.off();
@@ -332,19 +354,20 @@ void loop() {
     publishDeviceShadowDesired();
   }
 
+  // Handle display mode toggle with Button B
   if (M5.BtnB.wasPressed()) {
     M5.Lcd.fillScreen(BLACK);
-    if (disp_mode == 0) {
-      disp_mode = 1; // Env Monitor
-      displayEnvMonitor();
-    } else {
-      disp_mode = 0; // AC Remote
+    dispMode = (dispMode == 0) ? 1 : 0; // Toggle between Env Monitor and AC Remote
+    if (dispMode == 0) {
       displayACRemote();
+    } else {
+      displayEnvMonitor();
     }
   }
 
-  current_time = millis();
-  if ((long)(detect_time - current_time) < 0) {
+  // Read environmental data at specified intervals
+  currentTime = millis();
+  if ((long)(detectTime - currentTime) < 0) {
 #ifdef USE_ENV2
     temperature = sht31.readTemperature();
     humidity = sht31.readHumidity();
@@ -354,17 +377,18 @@ void loop() {
 #endif
     pressure = bme.readPressure() / 100.0F;
 
-    displayEnvMonitor();
+    displayEnvMonitor(); // Update the display with environmental data
 
-    detect_time = current_time + detect_interval;
+    detectTime = currentTime + DETECT_INTERVAL;
 
-    if ((long)(upload_time - current_time) < 0) {
+    // Check if it's time to upload data
+    if ((long)(uploadTime - currentTime) < 0) {
       struct tm timeInfo;
-      getLocalTime(&timeInfo); // 時刻を取得
+      getLocalTime(&timeInfo); // Get current time
 
       char time[50];
       sprintf(time, "%04d/%02d/%02d %02d:%02d:%02d",
-        timeInfo.tm_year+1900, timeInfo.tm_mon+1, timeInfo.tm_mday,
+        timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday,
         timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
 
       Serial.printf("Time: %s\n", time);
@@ -372,7 +396,7 @@ void loop() {
       Serial.printf("Humidity: %2.0f %%\n", humidity);
       Serial.printf("Pressure: %4.1f hPa\n", pressure);
 
-      //jsonデータ作成
+      // Prepare JSON data
 //      const size_t capacity = JSON_OBJECT_SIZE(4);
 //      DynamicJsonDocument doc(capacity);
       DynamicJsonDocument doc(192);
@@ -385,15 +409,13 @@ void loop() {
       doc["ac_temp"] = ac.getTemp();
 
       String message_body;
-
       serializeJson(doc, message_body);
-
       Serial.println(message_body);
 
-      send_post_request(host, message_body);
-      mqttPublish(pubTopicDB, message_body.c_str());
+      sendPostRequest(host, message_body); // Send data to the server
+      mqttPublish(pubTopicDB, message_body.c_str()); // Publish data via MQTT
  
-      upload_time = current_time + upload_interval;
+      uploadTime = currentTime + UPLOAD_INTERVAL;
     }
   }
 
@@ -404,6 +426,4 @@ void loop() {
 //  Serial.println("Sending IR command to A/C ...");
 //  ac.send();
 #endif  // SEND_MITSUBISHI_AC
-//  printState();
-//  delay(5000);
 }
