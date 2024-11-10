@@ -10,7 +10,8 @@
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
-#include <HTTPClient.h>
+#include <WiFiMulti.h>
+#include <InfluxDbClient.h>
 #include <ArduinoJson.h>
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
@@ -28,6 +29,13 @@ WiFiClientSecure httpsClient;
 PubSubClient mqttClient(httpsClient);
 char pubMessage[1024];
 
+WiFiMulti wifiMulti;
+// InfluxDB client instance
+InfluxDBClient influxdbClient;
+//InfluxDBClient influxdbClient(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN);
+// Data point
+Point acRemote("ac_remote");
+
 const uint16_t kIrLed = 9;  // M5StickC IR
 IRMitsubishiAC ac(kIrLed);  // Set the GPIO used for sending messages.
 
@@ -40,11 +48,11 @@ Adafruit_BMP280 bme;
 
 void setupWifi() {
   Serial.print("Connecting to WiFi: ");
-  Serial.println(ssid);
+  Serial.println(WIFI_SSID);
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
-  WiFi.begin(ssid, password);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   while (WiFi.status() != WL_CONNECTED) {
     Serial.print(".");
@@ -65,10 +73,10 @@ void checkWifiReconnect() {
 }
 
 void setupMqtt() {
-  httpsClient.setCACert(rootCA);
-  httpsClient.setCertificate(certificate);
-  httpsClient.setPrivateKey(privateKey);
-  mqttClient.setServer(endpoint, mqttPort);
+  httpsClient.setCACert(ROOT_CA);
+  httpsClient.setCertificate(CLIENT_CERTIFICATE);
+  httpsClient.setPrivateKey(CLIENT_PRIVATE_KEY);
+  mqttClient.setServer(MQTT_ENDPOINT, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
 }
 
@@ -80,7 +88,7 @@ void connectMqtt() {
     if (mqttClient.connect(clientId.c_str())) {
       Serial.println("connected");
       mqttClient.publish("outTopic", "hello world");
-      mqttClient.subscribe(subTopic);
+      mqttClient.subscribe(MQTT_SHADOW_UPDATE_DELTA_TOPIC);
     } else {
       Serial.print("MQTT connection failed, rc=");
       Serial.print(mqttClient.state());
@@ -141,12 +149,12 @@ void mqttPublish(const char* topic, const char* payload) {
 
 void publishDeviceShadowReported() {
   sprintf(pubMessage, "{\"state\": {\"reported\": {\"power\": %d,\"mode\": %d,\"temp\": %d}}}", ac.getPower(), ac.getMode(), ac.getTemp());
-  mqttPublish(pubTopic, pubMessage);
+  mqttPublish(MQTT_SHADOW_UPDATE_TOPIC, pubMessage);
 }
 
 void publishDeviceShadowDesired() {
   sprintf(pubMessage, "{\"state\": {\"desired\": {\"power\": %d,\"mode\": %d,\"temp\": %d}}}", ac.getPower(), ac.getMode(), ac.getTemp());
-  mqttPublish(pubTopic, pubMessage);
+  mqttPublish(MQTT_SHADOW_UPDATE_TOPIC, pubMessage);
 }
 
 void printState() {
@@ -207,45 +215,30 @@ void setupTime() {
   configTime(9 * 3600L, 0, "ntp.nict.jp", "time.google.com", "ntp.jst.mfeed.ad.jp");
 }
 
-void sendPostRequest(const char *url, const String &body) {
-  HTTPClient http;
-  
-  Serial.print("[HTTP] begin...\n");
-  // configure traged server and url
-  http.begin(url); //HTTP
-
-  const char* headerNames[] = {"Location"};
-  http.collectHeaders(headerNames, sizeof(headerNames) / sizeof(headerNames[0]));
-  
-  Serial.print("[HTTP] POST...\n");
-  // start connection and send HTTP header
-  int httpCode = http.POST(body);
-  
-  // httpCode will be negative on error
-  if (httpCode > 0) {
-    // HTTP header has been send and Server response header has been handled
-    Serial.printf("[HTTP] POST... code: %d\n", httpCode);
-   
-    // file found at server
-    if (httpCode == HTTP_CODE_OK) {
-      String payload = http.getString();
-//      Serial.println(payload);
-    }
-    else if (httpCode == HTTP_CODE_FOUND) {
-      String payload = http.getString();
-//      Serial.println(payload);
-      
-      Serial.printf("[HTTP] POST... Location: %s\n", http.header("Location").c_str());
-
-      String message_body;
-//      send_get_request(http.header("Location").c_str(), message_body);
-//      Serial.println(message_body);
-    }
-  } else {
-    Serial.printf("[HTTP] POST... failed, error: %s\n", http.errorToString(httpCode).c_str());
+void setupInfluxDB() {
+  wifiMulti.addAP(WIFI_SSID, WIFI_PASSWORD);
+  while (wifiMulti.run() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
   }
-  
-  http.end();
+
+  influxdbClient.setConnectionParams(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN);
+
+  uint64_t chipId = ESP.getEfuseMac();
+  String clientId = "ESP32Client-" + String((uint32_t)(chipId & 0xFFFFFFFF), HEX);
+
+  // Add tags
+  acRemote.addTag("client_id", clientId);
+}
+
+void connectInfluxDB() {
+  if (influxdbClient.validateConnection()) {
+    Serial.print("Connected to InfluxDB: ");
+    Serial.println(influxdbClient.getServerUrl());
+  } else {
+    Serial.print("InfluxDB connection failed: ");
+    Serial.println(influxdbClient.getLastErrorMessage());
+  }
 }
 
 void setup() {
@@ -280,6 +273,7 @@ void setup() {
   // Setup WiFi, MQTT, and Time
   setupWifi();
   setupMqtt();
+  setupInfluxDB();
   setupTime();
 
   // Initialize the A/C remote to a default state
@@ -304,6 +298,8 @@ void setup() {
   connectMqtt();
   delay(500); // Wait for a while after subscribing to "/update/delta" before publishing "/update"
   publishDeviceShadowReported();
+
+  connectInfluxDB();
 }
 
 float temperature;
@@ -411,10 +407,27 @@ void loop() {
       String message_body;
       serializeJson(doc, message_body);
       Serial.println(message_body);
+      mqttPublish(MQTT_SENSOR_DATA_TOPIC, message_body.c_str()); // Publish data via MQTT
 
-      sendPostRequest(host, message_body); // Send data to the server
-      mqttPublish(pubTopicDB, message_body.c_str()); // Publish data via MQTT
- 
+      acRemote.clearFields();
+      acRemote.addField("temperature", temperature);
+      acRemote.addField("humidity", humidity);
+      acRemote.addField("pressure", pressure);
+      acRemote.addField("ac_power", (int)ac.getPower());
+      acRemote.addField("ac_mode", ac.getMode());
+      acRemote.addField("ac_temp", ac.getTemp());
+      Serial.print("Writing: ");
+      Serial.println(influxdbClient.pointToLineProtocol(acRemote));
+      // If no Wifi signal, try to reconnect it
+      if (wifiMulti.run() != WL_CONNECTED) {
+        Serial.println("Wifi connection lost");
+      }
+      // Write point
+      if (!influxdbClient.writePoint(acRemote)) {
+        Serial.print("InfluxDB write failed: ");
+        Serial.println(influxdbClient.getLastErrorMessage());
+      }
+
       uploadTime = currentTime + UPLOAD_INTERVAL;
     }
   }
