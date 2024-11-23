@@ -1,17 +1,10 @@
-/*
-    note: need add library Adafruit_SHT31 from library manage
-    Github: https://github.com/adafruit/Adafruit_SHT31
-    
-    note: need add library Adafruit_BMP280 from library manage
-    Github: https://github.com/adafruit/Adafruit_BMP280_Library
-*/
-
 #include <M5StickC.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <WiFiMulti.h>
 #include <InfluxDbClient.h>
+#include <InfluxDbCloud.h>
 #include <ArduinoJson.h>
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
@@ -32,7 +25,6 @@ char pubMessage[1024];
 WiFiMulti wifiMulti;
 // InfluxDB client instance
 InfluxDBClient influxdbClient;
-//InfluxDBClient influxdbClient(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN);
 // Data point
 Point acRemote("ac_remote");
 
@@ -51,10 +43,8 @@ void setupWifi() {
   Serial.println(WIFI_SSID);
 
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  while (WiFi.status() != WL_CONNECTED) {
+  wifiMulti.addAP(WIFI_SSID, WIFI_PASSWORD);
+  while (wifiMulti.run() != WL_CONNECTED) {
     Serial.print(".");
     delay(500);
   }
@@ -66,9 +56,16 @@ void setupWifi() {
 }
 
 void checkWifiReconnect() {
-  if (WiFi.status() != WL_CONNECTED) {
+  if (wifiMulti.run() != WL_CONNECTED) {
     Serial.println("WiFi connection lost. Reconnecting...");
-    setupWifi();
+    while (wifiMulti.run() != WL_CONNECTED) {
+      Serial.print(".");
+      delay(500);
+    }
+    Serial.println("");
+    Serial.println("WiFi reconnected");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
   }
 }
 
@@ -216,13 +213,8 @@ void setupTime() {
 }
 
 void setupInfluxDB() {
-  wifiMulti.addAP(WIFI_SSID, WIFI_PASSWORD);
-  while (wifiMulti.run() != WL_CONNECTED) {
-    Serial.print(".");
-    delay(500);
-  }
-
-  influxdbClient.setConnectionParams(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN);
+  // Set InfluxDB connection parameters
+  influxdbClient.setConnectionParams(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN, InfluxDbCloud2CACert);
 
   uint64_t chipId = ESP.getEfuseMac();
   String clientId = "ESP32Client-" + String((uint32_t)(chipId & 0xFFFFFFFF), HEX);
@@ -270,7 +262,7 @@ void setup() {
     while (1);
   }
 
-  // Setup WiFi, MQTT, and Time
+  // Setup WiFi, MQTT, InfluxDB and Time
   setupWifi();
   setupMqtt();
   setupInfluxDB();
@@ -299,6 +291,7 @@ void setup() {
   delay(500); // Wait for a while after subscribing to "/update/delta" before publishing "/update"
   publishDeviceShadowReported();
 
+  // Connect to InfluxDB
   connectInfluxDB();
 }
 
@@ -306,10 +299,12 @@ float temperature;
 float humidity;
 float pressure;
 const unsigned long DETECT_INTERVAL = 1000; // 1 second
-const unsigned long UPLOAD_INTERVAL = 600000; // 10 minutes
+const unsigned long UPLOAD_INTERVAL_MQTT = 600000; // 10 minutes
+const unsigned long UPLOAD_INTERVAL_INFLUXDB = 60000; // 1 minutes
 unsigned long currentTime = 0;
 unsigned long detectTime = 0;
-unsigned long uploadTime = 0;
+unsigned long uploadTimeMqtt = 0;
+unsigned long uploadTimeInfluxDB = 0;
 
 void displayEnvMonitor() {
   if (dispMode == 0) {
@@ -377,8 +372,8 @@ void loop() {
 
     detectTime = currentTime + DETECT_INTERVAL;
 
-    // Check if it's time to upload data
-    if ((long)(uploadTime - currentTime) < 0) {
+    // Check if it's time to upload data via MQTT
+    if ((long)(uploadTimeMqtt - currentTime) < 0) {
       struct tm timeInfo;
       getLocalTime(&timeInfo); // Get current time
 
@@ -409,6 +404,11 @@ void loop() {
       Serial.println(message_body);
       mqttPublish(MQTT_SENSOR_DATA_TOPIC, message_body.c_str()); // Publish data via MQTT
 
+      uploadTimeMqtt = currentTime + UPLOAD_INTERVAL_MQTT;
+    }
+
+    // Check if it's time to upload data to InfluxDB
+    if ((long)(uploadTimeInfluxDB - currentTime) < 0) {
       acRemote.clearFields();
       acRemote.addField("temperature", temperature);
       acRemote.addField("humidity", humidity);
@@ -418,17 +418,13 @@ void loop() {
       acRemote.addField("ac_temp", ac.getTemp());
       Serial.print("Writing: ");
       Serial.println(influxdbClient.pointToLineProtocol(acRemote));
-      // If no Wifi signal, try to reconnect it
-      if (wifiMulti.run() != WL_CONNECTED) {
-        Serial.println("Wifi connection lost");
-      }
       // Write point
       if (!influxdbClient.writePoint(acRemote)) {
         Serial.print("InfluxDB write failed: ");
         Serial.println(influxdbClient.getLastErrorMessage());
       }
 
-      uploadTime = currentTime + UPLOAD_INTERVAL;
+      uploadTimeInfluxDB = currentTime + UPLOAD_INTERVAL_INFLUXDB;
     }
   }
 
